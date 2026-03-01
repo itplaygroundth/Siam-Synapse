@@ -1,10 +1,10 @@
-# OpenClaw Distributed AI Gateway
+# Siam Synapse (Distributed AI Gateway)
 
 ## 📋 ข้อมูลเบื้องต้น (Project Overview)
-* **Project Name:** OpenClaw Distributed AI Gateway
+* **Project Name:** Siam Synapse
 * **Version:** 1.0 (Zero Day Edition)
 * **Goal:** สร้างระบบ AI Gateway ที่ทนทาน (Resilient), ขยายตัวได้ (Scalable), และดูแลตัวเองได้ (Self-Healing)
-* **Tech Stack:** Go (Fiber), gRPC, Redis, SQLite (Encrypted), Docker
+* **Tech Stack:** Go (Fiber), gRPC, **Supabase (PostgreSQL)**, **Redis (Existing)**, Docker
 
 ---
 
@@ -12,11 +12,10 @@
 
 
 
-### 1.1 Master Node (Orchestrator)
-* **หน้าที่:** จัดการ Config/Keys (SQLite), รัน Dashboard (Fiber), รับ Heartbeat (gRPC Server)
-* **Tech:** Fiber + gRPC Server + Encrypted SQLite
+### 1.1 Master Node (Orchestrator - Go)
+* **หน้าที่:** จัดการ Config/Keys (ใช้ **PostgreSQL ของ Supabase**), รัน Dashboard (Fiber), รับ Heartbeat (gRPC Server)
 
-### 1.2 Worker Node (Proxy)
+### 1.2 Worker Node (Proxy - Go)
 * **หน้าที่:** รัน Proxy หน้า Service (Fiber), ส่ง Heartbeat (gRPC Client), รับคำสั่ง (gRPC Client)
 * **Tech:** Fiber + gRPC Client
 
@@ -29,77 +28,54 @@
 | **Language** | Go 1.22+ | Core Logic |
 | **Framework** | **GoFiber** | HTTP API & Dashboard |
 | **RPC** | **gRPC** | Communication between nodes |
-| **Database** | SQLite + **SQLCipher** | Encrypted Config Storage |
-| **Cache/Bus** | Redis | Heartbeat, Pub/Sub |
+| **Database** | **Supabase (PostgreSQL)** | Centralized Config Storage |
+| **Cache/Bus** | **Redis (Existing)** | Heartbeat, Pub/Sub |
 | **Deployment** | Docker & Compose | Containerization |
 
 ---
 
 ## 💻 3. ข้อกำหนดทางเทคนิค (Technical Specifications)
 
-### 3.1 สภาพแวดล้อมปัจจุบัน (Current Host)
-* **OS:** Ubuntu 22.04 LTS หรือใหม่กว่า
+### 3.1 สภาพแวดล้อมปัจจุบัน (Current Host - Ubuntu)
+* **OS:** Ubuntu 22.04 LTS
 * **CPU:** Intel Core i3 Gen 12 (4 Cores / 8 Threads)
-* **RAM:** 16GB
+* **RAM:** 16GB (⚠️ **แน่น** - ต้องจัดการดีๆ)
 * **Storage:** 256GB SSD NVMe.2
-* **Network:** Gigabit Ethernet (สำหรับติดต่อ Node ภายนอก)
-
-### 3.2 ความต้องการขั้นต่ำสำหรับ Node อื่นๆ (Minimal Node Requirement)
-* **OS:** Linux (Ubuntu/Debian)
-* **CPU:** 1 Core
-* **RAM:** 1GB
-* **Storage:** 10GB SSD
-
-### 3.3 การเตรียมตัวย้ายขึ้น Cloud (Cloud VPS Consideration)
-ในอนาคตเมื่อย้ายขึ้น VPS (เช่น DigitalOcean, AWS, GCP) ให้พิจารณา:
-* **Master Node:** เลือก VPS ที่มี CPU/RAM ระดับกลาง (เช่น 2 vCPU, 4GB RAM) เพื่อรองรับ gRPC และ Dashboard
-* **Worker Nodes:** เลือก VPS ขนาดเล็ก (1 vCPU, 1GB RAM) เพื่อประหยัดค่าใช้จ่าย
-* **Network:** ตรวจสอบ Firewall ให้เปิดพอร์ต gRPC และ HTTP/HTTPS
+* **Installed Tech:** Supabase Stack (Postgres, Kong, etc.), Redis-Autobot
 
 ---
 
 ## 📝 4. แผนการดำเนินการ (Implementation Roadmap)
 
-### 🗓️ Phase 1: Foundation (Day 1)
-- [ ] **Setup Environment:** ติดตั้ง Docker, Go, และ Node.js บน Ubuntu
-- [ ] **Git Setup:** สร้าง Repository, ตั้งค่า `.gitignore` และ Branching Strategy
-- [ ] **Initialize Master Container:** สร้าง Docker Compose สำหรับ Redis และ SQLite
-- [ ] **Encrypted Database:** พัฒนา Module สำหรับ Encrypt/Decrypt Config ด้วย SQLCipher
+### 🗓️ Phase 1: Foundation & Integration (Day 1)
+- [ ] **Git Setup:** CloneRepo `Siam-Synapse`
+- [ ] **Database Setup:** สร้าง Table ใน Supabase สำหรับเก็บ API Keys/Config
+- [ ] **Docker Compose:** สร้าง `docker-compose.yml` สำหรับรัน Master และ Worker โดยใช้ Redis เดิม
 
 ### 🗓️ Phase 2: Master Controller (Day 2-3)
-- [ ] **gRPC Server:** พัฒนา gRPC Server บน Master Node สำหรับรับ Heartbeat จาก Worker
-- [ ] **Config API:** พัฒนา API ด้วย Fiber สำหรับจัดการ API Keys และ Policy
-- [ ] **Dashboard:** สร้าง UI พื้นฐานสำหรับดูสถานะ Node และจัดการ Keys
+- [ ] **gRPC Server:** พัฒนา gRPC Server บน Master Node
+- [ ] **Config API:** พัฒนา API ด้วย Fiber เพื่อดึง/แก้ Config จาก Supabase
+- [ ] **Dashboard:** สร้าง UI พื้นฐานเพื่อดูสถานะ Worker Node
 
 ### 🗓️ Phase 3: Worker Node & Proxy (Day 4-5)
-- [ ] **Worker Docker:** สร้าง Dockerfile สำหรับ Worker Node
-- [ ] **Fiber Proxy:** พัฒนา Proxy Handler ด้วย Fiber (แทนที่ `net/http` เดิม)
-- [ ] **gRPC Client:** พัฒนา gRPC Client ใน Worker เพื่อส่ง Heartbeat และรับคำสั่งจาก Master
-- [ ] **Key Management:** Worker ดึง Config จาก Master ผ่าน gRPC เมื่อเริ่มทำงาน
-
-### 🗓️ Phase 4: Self-Healing & Automation (Day 6-7)
-- [ ] **Heartbeat Monitor:** Master ตรวจสอบสถานะ Node ผ่าน Redis
-- [ ] **Remote Command:** Master ส่งคำสั่งผ่าน gRPC/SSH เพื่อ Restart Worker ที่ตาย
-- [ ] **Telegram Integration:** เชื่อมต่อ Telegram Bot เพื่อแจ้งเตือนเมื่อ Node ตายหรือเมื่อมีการ Switch Model
+- [ ] **Fiber Proxy:** พัฒนา Proxy Handler ด้วย Fiber
+- [ ] **gRPC Client:** พัฒนา gRPC Client ใน Worker เพื่อส่ง Heartbeat
+- [ ] **Key Management:** Worker ดึง Config จาก Master ผ่าน gRPC
 
 ---
 
-## 🖥️ 5. โครงสร้างไฟล์และ Git Workflow
-
-
+## 🖥️ 5. โครงสร้างไฟล์ (File Structure)
 
 ```text
-openclaw/
-├── .git/
-├── .gitignore         // ignore .env, db files, vendor
+Siam-Synapse/
 ├── master/
 │   ├── main.go        // Fiber Server + gRPC Server
-│   ├── config.go      // SQLCipher Logic
-│   └── dashboard/     // Web UI files
+│   ├── db.go          // Supabase Connect Logic
+│   └── dashboard/
 ├── worker/
 │   ├── main.go        // Fiber Proxy + gRPC Client
-│   └── proxy.go       // Proxy Handler
+│   └── proxy.go
 ├── proto/
 │   └── control.proto  // gRPC Definitions
-├── docker-compose.yml // Orchestration
-└── .env.example       // Environment Variables
+├── docker-compose.yml // Orchestration (pointing to Redis-Autobot)
+└── .gitignore

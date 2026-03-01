@@ -1,0 +1,54 @@
+syntax = "proto3";
+package proto;
+option go_package = "./proto";
+
+// บริการหลักที่ Master จะเปิดให้ Worker เรียกใช้
+service MasterControl {
+  // Worker ส่งข้อมูลรายงานตัว (Heartbeat) - Unary RPC
+  rpc ReportStatus (NodeStatus) returns (Ack) {}
+  
+  // Worker ร้องขอ Configuration ล่าสุด - Unary RPC
+  rpc GetConfig (NodeIdentity) returns (ConfigResponse) {}
+
+  // Worker คอยฟังคำสั่งจาก Master - Server Streaming RPC
+  rpc GetCommand (NodeStatus) returns (stream Command) {}
+
+  rpc ManageContainer (ContainerAction) returns (Ack);
+}
+
+// ข้อความข้อมูลสถานะ
+message NodeStatus {
+  string node_id = 1;
+  float cpu_usage = 2;
+  float ram_usage = 3;
+  string status = 4;
+}
+
+// ข้อความการตอบรับ
+message Ack {
+  bool success = 1;
+  string message = 2;
+}
+
+message ContainerAction {
+    string node_id = 1;
+    string action = 2; // เช่น "restart", "pull"
+    string container_name = 3;
+}
+
+// ข้อความระบุตัวตนของ Worker
+message NodeIdentity {
+  string node_id = 1;
+  string secret_key = 2;
+}
+
+// ข้อความ Configuration ที่ส่งกลับไปให้ Worker
+message ConfigResponse {
+  string api_key = 1;
+  string proxy_rules = 2;
+}
+
+// ข้อความคำสั่งที่จะส่งให้ Worker
+message Command {
+  string command = 1; // เช่น "restart", "stop"
+}

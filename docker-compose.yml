@@ -1,0 +1,46 @@
+services:
+  # Master Controller - Orchestrator
+  master:
+    #image: golang:1.24-alpine
+    container_name: siam-synapse-master
+    build: 
+      context: .
+      dockerfile: master/Dockerfile
+    volumes:
+      - .:/app                     # Mount Root ของโปรเจกต์
+    working_dir: /app/master
+    ports:
+      - "8080:8080" # API & Dashboard Port
+      - "50051:50051" # gRPC Port
+    environment:
+      # ใช้ชื่อ Container ของ Redis เดิม
+      - REDIS_ADDR=redis-autobot:6379 
+      - DATABASE_URL=${DATABASE_URL}
+      # Supabase Credentials
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_SERVICE_KEY}
+    networks:
+      - supabase_default #autobot2026_autobot-network # เปลี่ยนชื่อให้ตรงกับ Network ID ล่าสุด
+    command: sh -c "go run main.go"
+    restart: always
+
+  worker:
+    #image: golang:1.24-alpine
+    container_name: worker-ubuntu-01
+    build: 
+      context: .
+      dockerfile: worker/Dockerfile
+    volumes:
+      - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock # แชร์ Socket ของ Docker
+    working_dir: /app/worker
+    depends_on:
+      - master
+    networks:
+      - supabase_default #autobot2026_autobot-network
+    command: sh -c "go mod tidy && go run main.go"
+    restart: always
+
+networks:
+  supabase_default:
+    external: true # บอกว่า network นี้ถูกสร้างไว้แล้ว

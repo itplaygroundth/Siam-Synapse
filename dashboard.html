@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Siam Synapse Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .chart-container {
+            width: 100%;
+            height: 300px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Siam Synapse - Worker Nodes</h1>
+
+    <div class="container">
+        <div class="chart-container">
+            <canvas id="cpuChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <canvas id="ramChart"></canvas>
+        </div>
+    </div>
+
+    <table id="logTable">
+        <thead>
+            <tr>
+                <th>Node ID</th>
+                <th>CPU (%)</th>
+                <th>RAM (%)</th>
+                <th>Status</th>
+                <th>Last Update</th>
+                <th>Action</th>
+                <th>Container Mgmt</th>
+            </tr>
+            </tr>
+        </thead>
+        <tbody id="logBody"></tbody>
+    </table>
+
+    <script>
+        // --- ส่วนของ Chart.js ---
+        const cpuCtx = document.getElementById('cpuChart').getContext('2d');
+        const ramCtx = document.getElementById('ramChart').getContext('2d');
+
+        const cpuChart = new Chart(cpuCtx, {
+            type: 'line',
+            data: { labels: [], datasets: [{ label: 'CPU Usage (%)', data: [], borderColor: 'rgb(75, 192, 192)', tension: 0.1 }] },
+            options: { responsive: true, maintainAspectRatio: false }
+        });
+
+        const ramChart = new Chart(ramCtx, {
+            type: 'line',
+            data: { labels: [], datasets: [{ label: 'RAM Usage (%)', data: [], borderColor: 'rgb(255, 99, 132)', tension: 0.1 }] },
+            options: { responsive: true, maintainAspectRatio: false }
+        });
+
+        // --- ส่วนดึงข้อมูลและอัปเดตกราฟ/ตาราง ---
+        async function fetchLogs() {
+            const response = await fetch('/logs');
+            const logs = await response.json();
+
+            // อัปเดตตาราง (เหมือนเดิม)
+            const logBody = document.getElementById('logBody');
+            logBody.innerHTML = '';
+            logs.forEach(log => {
+                const containerName = log.node_id;
+                const row = `<tr>
+                    <td>${log.node_id}</td>
+                    <td>${log.cpu_usage.toFixed(2)}</td>
+                    <td>${log.ram_usage.toFixed(2)}</td>
+                    <td>${log.status}</td>
+                    <td>${new Date(log.created_at).toLocaleTimeString()}</td>
+                    <td><button onclick="sendCommand('${log.node_id}', 'restart')">Restart</button></td>
+                    <td>
+                    <button onclick="manageContainer('${log.node_id}', 'restart', '${containerName}')">
+                        Restart App
+                    </button>
+                </td>
+                </tr>`;
+                logBody.innerHTML += row;
+            });
+
+            // อัปเดตกราฟ (เอาข้อมูลมากลับด้านเพื่อให้เวลาเรียงจากเก่าไปใหม่)
+            const sortedLogs = logs.slice().reverse();
+            const labels = sortedLogs.map(log => new Date(log.created_at).toLocaleTimeString());
+            const cpuData = sortedLogs.map(log => log.cpu_usage);
+            const ramData = sortedLogs.map(log => log.ram_usage);
+
+            cpuChart.data.labels = labels;
+            cpuChart.data.datasets[0].data = cpuData;
+            cpuChart.update();
+
+            ramChart.data.labels = labels;
+            ramChart.data.datasets[0].data = ramData;
+            ramChart.update();
+        }
+
+        async function sendCommand(nodeID, command) {
+            if (confirm(`Are you sure you want to ${command} ${nodeID}?`)) {
+                await fetch(`/command/${nodeID}?cmd=${command}`, { method: 'POST' });
+                alert('Command sent!');
+            }
+        }
+
+        async function manageContainer(nodeID, action, containerName) {
+            if (confirm(`Are you sure you want to ${action} container ${containerName} on ${nodeID}?`)) {
+                try {
+                    const response = await fetch(`/container/${nodeID}/${action}/${containerName}`, {
+                        method: 'POST'
+                    });
+                    const result = await response.json();
+                    alert(result.message);
+                    fetchLogs(); // refresh data
+                } catch (error) {
+                    alert('Error: ' + error);
+                }
+            }
+        }
+
+        // ดึงข้อมูลทุก 5 วินาที
+        fetchLogs();
+        setInterval(fetchLogs, 5000);
+    </script>
+</body>
+
+</html>
