@@ -69,6 +69,22 @@ type server struct {
 	commands map[string]chan string // เก็บ Channel ของคำสั่งแยกตาม NodeID
 }
 
+func cleanupOldLogs() {
+    // 💡 ตั้งค่าให้ลบข้อมูลที่เก่ากว่า 1 ชั่วโมง
+    query := `DELETE FROM worker_logs WHERE created_at < NOW() - INTERVAL '1 hour'`
+    
+    result, err := db.Exec(query)
+    if err != nil {
+        log.Println("❌ Error cleaning up old logs:", err)
+        return
+    }
+    
+    rowsAffected, _ := result.RowsAffected()
+    if rowsAffected > 0 {
+        log.Printf("🧹 Cleaned up %d old log entries.", rowsAffected)
+    }
+}
+
 func scaleUpNode() {
 	ctx := context.Background()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -301,6 +317,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	go func() {
+        for {
+            cleanupOldLogs()
+            time.Sleep(1 * time.Hour)
+        }
+    }()
 
 	masterServer := &server{}
 	go func() {
