@@ -40,19 +40,70 @@
             background-color: #f2f2f2;
         }
     </style>
+    <style>
+        .status-online {
+            color: green;
+            font-weight: bold;
+        }
+
+        .status-offline {
+            color: red;
+            font-weight: bold;
+        }
+
+        .status-warning {
+            color: orange;
+            font-weight: bold;
+        }
+
+        .charts-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            /* แบ่งเป็น 2 คอลัมน์เท่าๆ กัน */
+            gap: 20px;
+            /* ระยะห่างระหว่างกราฟ */
+            margin-bottom: 20px;
+        }
+
+        .chart-box {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+    </style>
 </head>
 
 <body>
     <h1>Siam Synapse - Worker Nodes</h1>
-
-    <div class="container">
-        <div class="chart-container">
-            <canvas id="cpuChart"></canvas>
+    <div class="charts-container">
+        <div class="chart-box">
+            <h3>CPU RAM Usage</h3>
+            <canvas id="resourceChart"></canvas>
         </div>
-        <div class="chart-container">
-            <canvas id="ramChart"></canvas>
+        <div class="chart-box">
+            <h3>Worker Node</h3>
+            <canvas id="nodeChart"></canvas>
         </div>
     </div>
+    <div class="stats-container" style="display: flex; gap: 20px; margin-bottom: 20px;">
+        <div style="background: white; padding: 20px; border-radius: 8px; flex: 1; text-align: center;">
+            <h3>Total CPU</h3>
+            <p id="totalCpu" style="font-size: 2em; font-weight: bold;">0%</p>
+        </div>
+        <div style="background: white; padding: 20px; border-radius: 8px; flex: 1; text-align: center;">
+            <h3>Active Nodes</h3>
+            <p id="nodeCount" style="font-size: 2em; font-weight: bold;">0</p>
+        </div>
+    </div>
+    <!-- <div class="container">
+
+        <div>
+            <canvas id="resourceChart" width="400" height="150"></canvas>
+            <canvas id="nodeChart" width="400" height="150"></canvas>
+        </div>
+
+    </div> -->
 
     <table id="logTable">
         <thead>
@@ -63,7 +114,6 @@
                 <th>Status</th>
                 <th>Last Update</th>
                 <th>Action</th>
-                <th>Container Mgmt</th>
             </tr>
             </tr>
         </thead>
@@ -71,61 +121,192 @@
     </table>
 
     <script>
+        // --- โค้ด JavaScript ใน dashboard.html ---
+
+        function connectWebSocket() {
+            // 🛠️ 1. สร้าง connection ไปยัง backend
+            const ws = new WebSocket(`ws://${window.location.host}/ws/stats`);
+
+            ws.onopen = () => {
+                console.log("WebSocket Connected");
+            };
+
+            ws.onmessage = (event) => {
+                // 🛠️ 2. รับข้อมูล JSON
+                const data = JSON.parse(event.data);
+
+                // 🛠️ 3. อัปเดต HTML หน้าจอโดยไม่ต้องรีเฟรช
+                document.getElementById('totalCpu').innerText = data.total_cpu.toFixed(2) + '%';
+                document.getElementById('nodeCount').innerText = data.node_count;
+                const sortedLogs = data.logs.slice().reverse();
+                const cpuData = sortedLogs.map(log => log.cpu_usage);
+                const ramData = sortedLogs.map(log => log.ram_usage);
+
+
+
+                console.log("Data updated:", data);
+                updateNodeChart(data.node_count);
+                updateChart(cpuData, ramData);
+                updateTable(data.logs);
+            };
+
+            ws.onclose = () => {
+                console.log("WebSocket Disconnected. Reconnecting in 2 seconds...");
+                // 🛠️ 4. ลองเชื่อมต่อใหม่ถ้าหลุด
+                setTimeout(connectWebSocket, 2000);
+            };
+
+            ws.onerror = (err) => {
+                console.error("WebSocket Error:", err);
+                ws.close();
+            };
+        }
+
+        // เรียกใช้ฟังก์ชันเชื่อมต่อ
+        connectWebSocket();
+        const ctx = document.getElementById('resourceChart').getContext('2d');
+        const resourceChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [], // เวลา
+                datasets: [{
+                    label: 'CPU (%)',
+                    data: [],
+                    borderColor: 'rgb(75, 192, 192)',
+                }, {
+                    label: 'RAM (%)',
+                    data: [],
+                    borderColor: 'rgb(255, 99, 132)',
+                }]
+            },
+        });
+
+        // ในฟังก์ชันที่ดึงข้อมูลใหม่มา update กราฟ
+        const nodeChart = new Chart(document.getElementById('nodeChart'), {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Total Nodes',
+                    data: [],
+                    borderColor: 'rgb(54, 162, 235)',
+                    tension: 0.1
+                }]
+            }
+        });
+
+        // ในฟังก์ชัน fetchLogs():
+        function updateNodeChart(nodeCount) {
+            nodeChart.data.labels.push(new Date().toLocaleTimeString());
+            nodeChart.data.datasets[0].data.push(nodeCount);
+            nodeChart.update();
+        }
+
         // --- ส่วนของ Chart.js ---
-        const cpuCtx = document.getElementById('cpuChart').getContext('2d');
-        const ramCtx = document.getElementById('ramChart').getContext('2d');
+        // const cpuCtx = document.getElementById('cpuChart').getContext('2d');
+        // const ramCtx = document.getElementById('ramChart').getContext('2d');
 
-        const cpuChart = new Chart(cpuCtx, {
-            type: 'line',
-            data: { labels: [], datasets: [{ label: 'CPU Usage (%)', data: [], borderColor: 'rgb(75, 192, 192)', tension: 0.1 }] },
-            options: { responsive: true, maintainAspectRatio: false }
-        });
+        // const cpuChart = new Chart(cpuCtx, {
+        //     type: 'line',
+        //     data: { labels: [], datasets: [{ label: 'CPU Usage (%)', data: [], borderColor: 'rgb(75, 192, 192)', tension: 0.1 }] },
+        //     options: { responsive: true, maintainAspectRatio: false }
+        // });
 
-        const ramChart = new Chart(ramCtx, {
-            type: 'line',
-            data: { labels: [], datasets: [{ label: 'RAM Usage (%)', data: [], borderColor: 'rgb(255, 99, 132)', tension: 0.1 }] },
-            options: { responsive: true, maintainAspectRatio: false }
-        });
+        // const ramChart = new Chart(ramCtx, {
+        //     type: 'line',
+        //     data: { labels: [], datasets: [{ label: 'RAM Usage (%)', data: [], borderColor: 'rgb(255, 99, 132)', tension: 0.1 }] },
+        //     options: { responsive: true, maintainAspectRatio: false }
+        // });
 
+        function updateChart(newCpu, newRam) {
+            // อัปเดตข้อมูลกราฟตรงนี้
+            resourceChart.data.labels.push(new Date().toLocaleTimeString());
+            resourceChart.data.datasets[0].data.push(newCpu);
+            resourceChart.data.datasets[1].data.push(newRam);
+            resourceChart.update();
+        }
+
+        function updateTable(logs) {
+            const logBody = document.getElementById('logBody');
+            logBody.innerHTML = '';
+            logs.forEach(log => {
+                const row = document.createElement('tr');
+
+                // const statusCell = row.insertCell(3);
+                if (log.status === "Online") {
+                    log.status = `<span class="status-online">● Online</span>`;
+                } else {
+                    log.status = `<span class="status-offline">● Offline</span>`;
+                }
+
+                //const timeCell = row.insertCell(4);
+                log.created_at = new Date(log.created_at).toLocaleTimeString();
+
+                row.innerHTML = `
+                    <td>${log.node_id}</td>
+                    <td>${log.cpu_usage.toFixed(2)}%</td>
+                    <td>${log.ram_usage.toFixed(2)}%</td>
+                    <td>${log.status}</td>
+                    <td>${log.created_at}</td>
+                    <td><button onclick="scaleDownNode('${log.node_id}')">Scale Down</button></td>
+                `;
+                logBody.appendChild(row);
+            });
+        }
         // --- ส่วนดึงข้อมูลและอัปเดตกราฟ/ตาราง ---
         async function fetchLogs() {
             const response = await fetch('/logs');
             const logs = await response.json();
-
+            document.getElementById('totalCpu').innerText = logs.total_cpu.toFixed(2) + '%';
+            document.getElementById('nodeCount').innerText = logs.node_count;
             // อัปเดตตาราง (เหมือนเดิม)
             const logBody = document.getElementById('logBody');
             logBody.innerHTML = '';
-            logs.forEach(log => {
-                const containerName = log.node_id;
-                const row = `<tr>
-                    <td>${log.node_id}</td>
-                    <td>${log.cpu_usage.toFixed(2)}</td>
-                    <td>${log.ram_usage.toFixed(2)}</td>
-                    <td>${log.status}</td>
-                    <td>${new Date(log.created_at).toLocaleTimeString()}</td>
-                    <td><button onclick="sendCommand('${log.node_id}', 'restart')">Restart</button></td>
-                    <td>
-                    <button onclick="manageContainer('${log.node_id}', 'restart', '${containerName}')">
-                        Restart App
-                    </button>
-                </td>
-                </tr>`;
-                logBody.innerHTML += row;
+            logs.logs.forEach(log => {
+                // 1. สร้าง Row Element
+                const row = logBody.insertRow();
+
+                // 2. สร้าง Cells และใส่ข้อมูล
+                const nodeCell = row.insertCell(0);
+                nodeCell.textContent = log.node_id;
+
+                const cpuCell = row.insertCell(1);
+                cpuCell.textContent = log.cpu_usage.toFixed(2) + "%";
+
+                const ramCell = row.insertCell(2);
+                ramCell.textContent = log.ram_usage.toFixed(2) + "%";
+
+                // 3. ใส่สีสถานะ (จุดที่คุณต้องการ)
+                const statusCell = row.insertCell(3);
+                if (log.status === "Online") {
+                    statusCell.innerHTML = `<span class="status-online">● Online</span>`;
+                } else {
+                    statusCell.innerHTML = `<span class="status-offline">● Offline</span>`;
+                }
+
+                const timeCell = row.insertCell(4);
+                timeCell.textContent = new Date(log.created_at).toLocaleTimeString();
+
+                // 4. ปุ่ม Action
+                const actionCell = row.insertCell(5);
+                actionCell.innerHTML = `<button onclick="restartNode('${log.node_id}')">Restart</button>`;
             });
 
             // อัปเดตกราฟ (เอาข้อมูลมากลับด้านเพื่อให้เวลาเรียงจากเก่าไปใหม่)
-            const sortedLogs = logs.slice().reverse();
+            const sortedLogs = logs.logs.slice().reverse();
             const labels = sortedLogs.map(log => new Date(log.created_at).toLocaleTimeString());
             const cpuData = sortedLogs.map(log => log.cpu_usage);
             const ramData = sortedLogs.map(log => log.ram_usage);
 
-            cpuChart.data.labels = labels;
-            cpuChart.data.datasets[0].data = cpuData;
-            cpuChart.update();
+            // cpuChart.data.labels = labels;
+            // cpuChart.data.datasets[0].data = cpuData;
+            // cpuChart.update();
 
-            ramChart.data.labels = labels;
-            ramChart.data.datasets[0].data = ramData;
-            ramChart.update();
+            // ramChart.data.labels = labels;
+            // ramChart.data.datasets[0].data = ramData;
+            // ramChart.update();
+            updateChart(cpuData, ramData);
+            updateNodeChart(sortedLogs.length);
         }
 
         async function sendCommand(nodeID, command) {
@@ -149,10 +330,17 @@
                 }
             }
         }
-
+        function restartNode(nodeID) {
+            if (confirm(`Are you sure you want to restart ${nodeID}?`)) {
+                fetch(`/container/${nodeID}/restart`, { method: 'POST' })
+                    .then(res => res.json())
+                    .then(data => alert(data.message))
+                    .catch(err => console.error(err));
+            }
+        }
         // ดึงข้อมูลทุก 5 วินาที
-        fetchLogs();
-        setInterval(fetchLogs, 5000);
+        // fetchLogs();
+        // setInterval(fetchLogs, 5000);
     </script>
 </body>
 

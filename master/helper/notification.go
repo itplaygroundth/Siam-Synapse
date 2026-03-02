@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"github.com/joho/godotenv"
 )
 
 // PushMessage โครงสร้างข้อมูลสำหรับ LINE Push Message
@@ -22,6 +23,12 @@ type LineTextMessage struct {
 
 // SendLineAdminPush ทำหน้าที่ส่งแจ้งเตือนหา Admin โดยตรง
 func SendLineAdminPush(message string) {
+
+	err := godotenv.Load()
+    if err != nil {
+        log.Fatal("Error loading .env file")
+    }
+	
 	token := os.Getenv("LINE_CHANNEL_ACCESS_TOKEN")
 	adminID := os.Getenv("LINE_ADMIN_USER_ID")
 	
@@ -48,18 +55,15 @@ func SendLineAdminPush(message string) {
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
 	req.Header.Add("Content-Type", "application/json")
 	req.Header.Add("Authorization", "Bearer "+token)
+	//req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("❌ Line Push Error: %v", err)
-		return
-	}
-	defer resp.Body.Close()
+        log.Println("Error sending LINE notify:", err)
+        return
+    }
+    defer resp.Body.Close()
 
-	if resp.StatusCode == 200 {
-		log.Println("📢 LINE Push Notification Sent to Admin!")
-	} else {
-		log.Printf("❌ LINE Push Failed with Status: %d", resp.StatusCode)
-	}
+    log.Println("LINE Notify sent, status:", resp.Status)
 }

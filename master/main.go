@@ -8,28 +8,60 @@ import (
 	"net"
 	"os"
 	"sync"
-	"time"
+	"time" // ลบออกเพราะไม่ได้ใช้
 
 	"github.com/gofiber/fiber/v2"
-	"google.golang.org/grpc"
-	_ "github.com/lib/pq" // Postgres driver
 	"github.com/jkfastdevth/Siam-Synapse/proto"
-	helper	"github.com/jkfastdevth/Siam-Synapse/master/helper"
+	helper "github.com/jkfastdevth/Siam-Synapse/master/helper"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq" // Postgres driver
+	//"github.com/moby/moby/api/types"
+	 "github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
+	"google.golang.org/grpc"
+	"github.com/gofiber/contrib/websocket" // 🛠️ เพิ่ม import
+	//"github.com/moby/moby/api/types/network"
 )
 
 var db *sql.DB
 
- type MasterApp struct {
-	mu           sync.RWMutex
+type MasterApp struct {
+	mu            sync.RWMutex
 	workerClients map[string]proto.MasterControlClient // เก็บ Client ตาม NodeID
 }
 
 var appState = &MasterApp{
 	workerClients: make(map[string]proto.MasterControlClient),
 }
-// type masterServer struct {
-// 	proto.UnimplementedMasterControlServer
-// } 
+
+var (
+    workerCpuMap = make(map[string]float64) // เก็บ CPU ล่าสุดแยกตาม NodeID
+    statsMu      sync.RWMutex               // ใช้ RWMutex เพื่อประสิทธิภาพที่ดีขึ้น
+)
+
+type NodeInfo struct {
+	ContainerName string
+}
+
+	type LogEntry struct {
+			NodeID    string  `json:"node_id"`
+			CPUUsage  float64 `json:"cpu_usage"`
+			RAMUsage  float64 `json:"ram_usage"`
+			Status    string  `json:"status"`
+			CreatedAt string  `json:"created_at"`
+		}
+
+type LogResponse struct {
+    Logs      []LogEntry `json:"logs"`
+    TotalCPU  float64    `json:"total_cpu"`
+    NodeCount int        `json:"node_count"`
+}
+
+var nodeConfig = map[string]NodeInfo{
+	"worker-ubuntu-01": {ContainerName: "worker-ubuntu-01"},
+	// เพิ่ม node อื่นๆ ตรงนี้
+}
+
 // 1. เพิ่ม struct server เพื่อจัดการคำสั่ง
 type server struct {
 	proto.UnimplementedMasterControlServer
@@ -37,22 +69,112 @@ type server struct {
 	commands map[string]chan string // เก็บ Channel ของคำสั่งแยกตาม NodeID
 }
 
-// 2. Implement GetCommand
+func scaleUpNode() {
+	ctx := context.Background()
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		log.Println("Error connecting to Docker:", err)
+		return
+	}
+
+	// --- ส่วนคำสั่งสร้าง Container ---
+	// config := &container.Config{
+	//  // <--- แก้ชื่อ Image ตรงนี้
+	// 	Cmd:   []string{"./worker"},
+	// 	Env:   []string{"MASTER_IP=192.168.1.166"},
+	// 	Tty: false, // <--- แก้ IP ตรงนี้
+	// }
+	// hostConfig := &container.HostConfig{
+	// 	Resources: container.Resources{
+	// 		CPUShares: 512,
+	// 		Memory:    1024 * 1024 * 1024, // 1GB
+	// 	},
+	// }
+
+	// createOptions := container{
+	// 	Config:     config,
+	// 	HostConfig: hostConfig,
+	// }
+
+
+	hostConfig := &container.HostConfig{
+		Resources: container.Resources{
+			CPUShares: 512,
+			Memory:    1024 * 1024 * 1024,
+		},
+		// 🛠️ 2. ระบุ Network ที่ต้องการให้ Container ใหม่เข้าไปอยู่
+		NetworkMode: "supabase_default", // <--- แก้เป็นชื่อ Network ของคุณ
+	}
+
+	// networkConfig := &network.NetworkingConfig{
+	// 	EndpointsConfig: map[string]*network.EndpointSettings{
+	// 		"supabase_default": &network.EndpointSettings{
+	// 			// สามารถกำหนด IP แบบ Static ได้ที่นี่ (ถ้าต้องการ)
+	// 			// IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: "172.20.0.10"},
+	// 		},
+	// 	},
+	// }
+
+
+	containerName := fmt.Sprintf("worker-node-%d", time.Now().Unix())
+	resp, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
+			Cmd:   []string{"./worker"},
+			Env:   []string{
+			"MASTER_IP=siam-synapse-master", // 💡 แนะนำ: ใช้ชื่อ Container ของ Master แทน IP
+			fmt.Sprintf("NODE_ID=%s", containerName), // ส่ง NodeID ไปให้ Worker
+		},
+		Tty: false,
+		},
+		HostConfig: hostConfig, // HostConfig
+    	//NetworkConfig: networkConfig,  
+		Image: "jkfastdevth/worker-node:latest",
+	})
+
+	// resp, err := cli.ContainerCreate(ctx, &createOptions)
+
+	if err != nil {
+		log.Println("Error creating container:", err)
+		return
+	}
+
+
+	// --- สั่ง Start Container ---
+	// 🛠️ แก้ไข: ใช้ container.StartOptions แทน types.ContainerStartOptions
+	if _, err := cli.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
+		//panic(err)
+		log.Println("Error starting container:", err)
+	}
+
+	// cli.ContainerStart(ctx, resp.ID, container.StartOptions{})
+	log.Println("New Node created with ID:", resp.ID)
+}
+
+func checkAndScale(currentNodes int, totalCpuUsage float64) {
+	if currentNodes == 0 {
+		return
+	}
+	averageCpu := totalCpuUsage / float64(currentNodes)
+
+	if averageCpu > 70.0 && currentNodes < 5 {
+		log.Println("⚡ High Load detected! Scaling up...")
+		go scaleUpNode()
+	}
+}
+
 func (s *server) GetCommand(req *proto.NodeStatus, stream proto.MasterControl_GetCommandServer) error {
 	log.Printf("📡 Worker %s is listening for commands...", req.NodeId)
-	
+
 	s.mu.Lock()
 	if s.commands == nil {
 		s.commands = make(map[string]chan string)
 	}
-	// สร้าง Channel ใหม่สำหรับ Node นี้ถ้ายังไม่มี
 	if _, ok := s.commands[req.NodeId]; !ok {
 		s.commands[req.NodeId] = make(chan string, 1)
 	}
 	cmdChan := s.commands[req.NodeId]
 	s.mu.Unlock()
 
-	// คอยส่งคำสั่งจาก Channel ไปให้ Worker
 	for cmd := range cmdChan {
 		log.Printf("📤 Sending command '%s' to %s", cmd, req.NodeId)
 		if err := stream.Send(&proto.Command{Command: cmd}); err != nil {
@@ -61,170 +183,254 @@ func (s *server) GetCommand(req *proto.NodeStatus, stream proto.MasterControl_Ge
 	}
 	return nil
 }
-// 3. ย้าย ReportStatus มาอยู่ใต้ struct server ตัวเดียวกัน
+
+func countActiveNodes() int {
+	ctx := context.Background()
+    cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+    if err != nil {
+        log.Println("Error connecting to Docker:", err)
+        return 0
+    }
+
+    // 🛠️ แก้ไข: ใช้ container.ListOptions แบบปกติ (ไม่จำเป็นต้อง All: true)
+	containers, err := cli.ContainerList(ctx, client.ContainerListOptions{})
+    // containers, err := cli.ContainerList(context.Background(), container.ListOptions{})
+    if err != nil {
+        log.Println("Error listing containers:", err)
+        return 0
+    }
+
+    count := 0
+    for _, c := range containers.Items {
+        // --- เช็คชื่อ Container และ Status ---
+        // 1. เช็คว่าชื่อ Container มีคำว่า "/worker-node"
+        // 2. เช็คว่า Status เป็น "running"
+        if contains(c.Names, "/worker-ubuntu-01") && c.State == "running" {
+            count++
+        }
+    }
+    return count
+}
+
+// func countActiveNodes() int {
+// 	ctx := context.Background()
+// 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+// 	if err != nil {
+// 		log.Println("Error connecting to Docker:", err)
+// 		return 0
+// 	}
+
+// 	// 🛠️ แก้ไข: ใช้ container.ListOptions แทน types.ContainerListOptions
+// 	// containers, err := cli.ContainerList(context.Background(), container.ListOptions{All: true})
+// 	containers, err := cli.ContainerList(ctx, client.ContainerListOptions{})
+
+// 	if err != nil {
+// 		log.Println("Error listing containers:", err)
+// 		return 0
+// 	}
+
+// 	count := 0
+// 	for _, c := range containers.Items {
+// 		if contains(c.Names, "/worker-ubuntu-01") {
+// 			count++
+// 		}
+// 	}
+// 	return count
+// }
+
+ 
+
+func contains(s []string, str string) bool {
+	for _, v := range s {
+		if v == str {
+			return true
+		}
+	}
+	return false
+}
+func calculateTotalCpu() float64 {
+    statsMu.RLock()
+    defer statsMu.RUnlock()
+    
+    total := 0.0
+    for _, cpu := range workerCpuMap {
+        total += cpu
+    }
+    return total
+}
 func (s *server) ReportStatus(ctx context.Context, in *proto.NodeStatus) (*proto.Ack, error) {
 	fmt.Printf("📡 Heartbeat from: %s\n", in.NodeId)
 
-	// SQL สำหรับ Insert ข้อมูล
 	query := `INSERT INTO worker_logs (node_id, cpu_usage, ram_usage, status) VALUES ($1, $2, $3, $4)`
 	_, err := db.Exec(query, in.NodeId, in.CpuUsage, in.RamUsage, in.Status)
-	
+
 	if err != nil {
 		fmt.Printf("❌ DB Error: %v\n", err)
 		return &proto.Ack{Success: false, Message: "DB Error"}, nil
 	}
 
-	appState.mu.Lock()
-    if _, ok := appState.workerClients[in.NodeId]; !ok {
-        // ในกรณีนี้ Worker ต้องรับคำสั่ง gRPC ด้วย
-        // โค้ดนี้สมมติว่า Master รู้อยู่แล้วว่า Worker อยู่ IP ไหน
-        // เพื่อความง่ายในขั้นตอนแรก: ใช้ Docker Service Discovery
-        conn, err := grpc.Dial(in.NodeId+":50052", grpc.WithInsecure()) // สมมติ port 50052
-        if err == nil {
-            appState.workerClients[in.NodeId] = proto.NewMasterControlClient(conn)
-            log.Printf("🔌 Connected to worker: %s", in.NodeId)
-        }
-    }
-    appState.mu.Unlock()
+	statsMu.Lock()
+    workerCpuMap[in.NodeId] = float64(in.CpuUsage)
+    statsMu.Unlock()
 
+	totalCpu := calculateTotalCpu()
+	nodeCount := countActiveNodes()
+	checkAndScale(nodeCount, totalCpu)
 
 	if in.CpuUsage > 90.0 {
-       msg := fmt.Sprintf("⚠️ ALERT: High CPU Usage!\nNode: %s\nCPU: %.2f%%", in.NodeId, in.CpuUsage)
-    	go helper.SendLineAdminPush(msg)
-    }
+		msg := fmt.Sprintf("⚠️ ALERT: High CPU Usage!\nNode: %s\nCPU: %.2f%%", in.NodeId, in.CpuUsage)
+		go helper.SendLineAdminPush(msg)
+	}
 
 	return &proto.Ack{Success: true, Message: "Report Received"}, nil
 }
 
-func sendContainerAction(client proto.MasterControlClient, nodeID string, action string, containerName string) (*proto.Ack, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-	defer cancel()
-	
-	return client.ManageContainer(ctx, &proto.ContainerAction{
-		NodeId:        nodeID,
-		Action:        action,
-		ContainerName: containerName,
-	})
-}
+
+
+
 
 func main() {
-	// 1. เชื่อมต่อ Supabase (ใช้ Environment Variable จาก docker-compose)
 	var err error
-	dsn := os.Getenv("DATABASE_URL") // format: "postgres://user:pass@host:port/db?sslmode=disable"
+	err = godotenv.Load()
+	if err != nil {
+		log.Println("No .env file found")
+	}
+
+	dsn := os.Getenv("DATABASE_URL")
 	db, err = sql.Open("postgres", dsn)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	
 	masterServer := &server{}
-	// 2. รัน gRPC Server (เหมือนเดิม)
 	go func() {
-		lis, _ := net.Listen("tcp", ":50051")
+		lis, err := net.Listen("tcp", ":50051")
+		if err != nil {
+			log.Fatal(err)
+		}
 		s := grpc.NewServer()
-		//proto.RegisterMasterControlServer(s, &masterServer{})
 		proto.RegisterMasterControlServer(s, masterServer)
 		log.Println("🚀 Master gRPC Server: Running on :50051")
-		s.Serve(lis)
+		if err := s.Serve(lis); err != nil {
+			log.Fatal(err)
+		}
 	}()
 
-	// 3. Fiber Dashboard
 	app := fiber.New()
- 	app.Static("/", "../dashboard.html")
+	app.Static("/", "../dashboard.html")
 
-	app.Post("/command/:nodeID", func(c *fiber.Ctx) error {
-		nodeID := c.Params("nodeID")
-		command := c.Query("cmd") // เช่น /command/worker-01?cmd=restart
+	app.Use("/ws", func(c *fiber.Ctx) error {
+        if websocket.IsWebSocketUpgrade(c) {
+            c.Locals("allowed", true)
+            return c.Next()
+        }
+        return fiber.ErrUpgradeRequired
+    })
+	
+	// 🛠️ 2. จัดการ WebSocket Connection
+    app.Get("/ws/stats", websocket.New(func(c *websocket.Conn) {
+        // ดึงข้อมูล stats ทุกๆ 1 วินาที
+        for {
+            statsMu.RLock()
+            // สร้าง data JSON ที่จะส่ง
 
-		masterServer.mu.Lock()
-		if cmdChan, ok := masterServer.commands[nodeID]; ok {
-			cmdChan <- command
-			masterServer.mu.Unlock()
-			return c.SendString(fmt.Sprintf("Command '%s' sent to %s", command, nodeID))
+	rows, err := db.Query("SELECT node_id, cpu_usage, ram_usage, status, created_at FROM worker_logs ORDER BY created_at DESC LIMIT 10")
+		if err != nil {
+			log.Println("Error querying database:", err)
+			return
 		}
-		masterServer.mu.Unlock()
-		
-		return c.Status(404).SendString("Node not found")
-	})
+		defer rows.Close()
+		//totalCpu := calculateTotalCpu() // ⚠️ ต้องเขียน logic จริง
+    	//nodeCount := countActiveNodes()
 
+	
 
-	// เพิ่ม Fiber API Route
-	app.Post("/container/:nodeID/:action/:containerName", func(c *fiber.Ctx) error {
+		var logs []LogEntry
+		for rows.Next() {
+			var entry LogEntry
+			if err := rows.Scan(&entry.NodeID, &entry.CPUUsage, &entry.RAMUsage, &entry.Status, &entry.CreatedAt); err != nil {
+				log.Println("Error scanning row:", err)
+				return
+			}
+			logs = append(logs, entry)
+		}
+
+		 
+      
+
+            data := fiber.Map{
+				"logs":       logs,
+                "total_cpu":  calculateTotalCpu(),
+                "node_count": countActiveNodes(),
+            }
+            statsMu.RUnlock()
+
+            if err := c.WriteJSON(data); err != nil {
+                break // connection หลุด
+            }
+            time.Sleep(1 * time.Second) // ส่งข้อมูลทุก 1 วินาที
+        }
+    }))
+	app.Post("/container/:nodeID/:action", func(c *fiber.Ctx) error {
 		nodeID := c.Params("nodeID")
 		action := c.Params("action")
-	//	containerName := c.Params("containerName")
 
-		// appState.mu.RLock()
-		// client, ok := appState.workerClients[nodeID]
-		// appState.mu.RUnlock()
+		info, ok := nodeConfig[nodeID]
+		if !ok {
+			info = NodeInfo{ContainerName: nodeID}
+		}
 
 		masterServer.mu.Lock()
-    	cmdChan, ok := masterServer.commands[nodeID]
-    	masterServer.mu.Unlock()
+		cmdChan, ok := masterServer.commands[nodeID]
+		masterServer.mu.Unlock()
 
 		if !ok {
-			log.Printf("⚠️ Node %s not found in commands map", nodeID) // <--- ใส่ log ไว้เช็ค
-			return c.Status(404).JSON(fiber.Map{"message": "Worker node not connected"})
-    	}
-		cmdChan <- action // ส่ง action (เช่น "restart") ผ่าน stream
-		// ส่งคำสั่ง!
-		// res, err := client.ManageContainer(context.Background(), &proto.ContainerAction{
-		// 	NodeId:        nodeID,
-		// 	Action:        action,
-		// 	ContainerName: containerName,
-		// })
+			return c.Status(404).JSON(fiber.Map{"message": "Worker node not connected (Stream)"})
+		}
+		cmdChan <- action
 
-		//log.Printf("Action sent to %s: %s", nodeID, action)
-		
-		// --- ปรับปรุงตรงนี้ ---
-			// if err != nil {
-			// 	log.Printf("❌ Error sending action to %s: %v", nodeID, err)
-				
-			// 	// ถ้า error คือ EOF หรือ Unavailable ให้ลบ client ออก
-			// 	// เพื่อให้ ReportStatus สร้าง connection ใหม่ในครั้งถัดไป
-			// 	appState.mu.Lock()
-			// 	delete(appState.workerClients, nodeID)
-			// 	appState.mu.Unlock()
-				
-			// 	return c.Status(500).JSON(fiber.Map{"message": "Worker is restarting or unavailable. Try again in a few seconds."})
-			// }
-			// ----------------------
-		// if err != nil || !res.Success {
-		// 	log.Printf("Error sending action to %s: %v", nodeID, err)
-		// 	return c.Status(500).JSON(fiber.Map{"message": "Error message"})
-		// }
-		log.Printf("Action sent via stream to %s: %s", nodeID, action)
-		
-		return c.JSON(fiber.Map{"message": "Action sent to " + nodeID})
+		log.Printf("Action '%s' sent via stream to %s (Container: %s)", action, nodeID, info.ContainerName)
+
+		return c.JSON(fiber.Map{
+			"message":   "Action queued",
+			"node":      nodeID,
+			"container": info.ContainerName,
+			"action":    action,
+		})
 	})
 
-	// แก้ไขตรงนี้: เพิ่ม Route /logs เพื่อดึงข้อมูลจาก DB
 	app.Get("/logs", func(c *fiber.Ctx) error {
 		rows, err := db.Query("SELECT node_id, cpu_usage, ram_usage, status, created_at FROM worker_logs ORDER BY created_at DESC LIMIT 10")
 		if err != nil {
 			return c.Status(500).SendString(err.Error())
 		}
 		defer rows.Close()
+		totalCpu := calculateTotalCpu() // ⚠️ ต้องเขียน logic จริง
+    	nodeCount := countActiveNodes()
 
-    type LogEntry struct {
-        NodeID    string  `json:"node_id"`
-        CPUUsage  float64 `json:"cpu_usage"`
-        RAMUsage  float64 `json:"ram_usage"`
-        Status    string  `json:"status"`
-        CreatedAt string  `json:"created_at"`
-    }
+	
 
-    var logs []LogEntry
-    for rows.Next() {
-        var entry LogEntry
-        if err := rows.Scan(&entry.NodeID, &entry.CPUUsage, &entry.RAMUsage, &entry.Status, &entry.CreatedAt); err != nil {
-            return c.Status(500).SendString(err.Error())
-        }
-        logs = append(logs, entry)
-    }
+		var logs []LogEntry
+		for rows.Next() {
+			var entry LogEntry
+			if err := rows.Scan(&entry.NodeID, &entry.CPUUsage, &entry.RAMUsage, &entry.Status, &entry.CreatedAt); err != nil {
+				return c.Status(500).SendString(err.Error())
+			}
+			logs = append(logs, entry)
+		}
 
-    return c.JSON(logs)
-})
+		return c.JSON(fiber.Map{
+        "logs":       logs,
+        "total_cpu":  totalCpu,
+        "node_count": nodeCount,
+    })
+		// return c.JSON(LogResponse{
+        // Logs:      logs,
+        // TotalCPU:  totalCpu,
+        // NodeCount: nodeCount,
+    	// })
+	//	return c.JSON(logs)
+	})
 
 	log.Fatal(app.Listen(":8080"))
 }
